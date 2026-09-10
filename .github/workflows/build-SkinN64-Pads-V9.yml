@@ -1,0 +1,77 @@
+name: Build SkinN64 Pads V9
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Récupérer le correctif SkinN64
+        uses: actions/checkout@v5
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Récupérer la vraie base M64Plus FZ verrouillée
+        run: |
+          git clone --filter=blob:none https://github.com/fzurita/mupen64plus-ae.git m64fz
+          cd m64fz
+          git checkout f3c381bcc58e4adce897aba323193d3f407e30e3
+
+      - name: Installer le pad SkinN64
+        run: |
+          marker=$(find . -maxdepth 6 -type f -name 'SKINN64_PADS_VERSION_9' -print -quit)
+          if [ -z "$marker" ]; then
+            archive=$(find . -maxdepth 3 -type f -name '*V9*.zip' -print -quit)
+            if [ -n "$archive" ]; then
+              mkdir -p extracted_v8
+              unzip -q "$archive" -d extracted_v8
+              marker=$(find extracted_v8 -maxdepth 6 -type f -name 'SKINN64_PADS_VERSION_9' -print -quit)
+            fi
+          fi
+          if [ -z "$marker" ]; then
+            echo "ERREUR : correctif V9 introuvable. Ajoute le ZIP V9 au dépôt."
+            exit 1
+          fi
+          overlay_dir=$(dirname "$marker")
+          echo "Correctif utilisé : $overlay_dir"
+          cp -a "$overlay_dir"/. m64fz/
+
+      - name: Configurer Android et les dépendances GitHub
+        env:
+          GH_USER: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf 'sdk.dir=%s\ngpr.user=%s\ngpr.key=%s\n' "$ANDROID_SDK_ROOT" "$GH_USER" "$GH_TOKEN" > m64fz/local.properties
+
+      - name: Compiler réellement l'APK Pro sans publicité
+        working-directory: m64fz
+        run: |
+          ./gradlew :app:clean :app:assembleProDebug --no-daemon --stacktrace --no-build-cache
+
+      - name: Retrouver l'APK compilé
+        run: |
+          mkdir -p apk-result
+          echo "Contenu des dossiers de sortie Gradle :"
+          find m64fz/app/build -maxdepth 8 -type f -print 2>/dev/null | sort | tail -200 || true
+          find m64fz -type f -name '*.apk' -exec cp -v {} apk-result/ \;
+          echo "APK trouvés :"
+          find apk-result -maxdepth 1 -type f -name '*.apk' -print
+          if [ -z "$(find apk-result -maxdepth 1 -type f -name '*.apk' -print -quit)" ]; then
+            echo "ERREUR : Gradle n'a produit aucun APK, même dans les dossiers intermédiaires."
+            exit 1
+          fi
+
+      - name: Publier l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: SkinN64-Pads-V9-ARM64
+          path: apk-result/*.apk
+          if-no-files-found: error
